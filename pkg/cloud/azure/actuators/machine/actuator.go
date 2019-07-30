@@ -92,7 +92,17 @@ func (a *Actuator) handleMachineError(machine *machinev1.Machine, err *apierrors
 func (a *Actuator) Create(ctx context.Context, cluster *clusterv1.Cluster, machine *machinev1.Machine) error {
 	klog.Infof("Creating machine %v", machine.Name)
 
-	scope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
+	currScope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
+		Machine:    machine,
+		Cluster:    nil,
+		Client:     a.client,
+		CoreClient: a.coreClient,
+	})
+	if err != nil {
+		return a.handleMachineError(machine, apierrors.CreateMachine("failed to create machine %q scope: %v", machine.Name, err), createEventAction)
+	}
+
+	createScope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
 		Machine:    machine.DeepCopy(),
 		Cluster:    nil,
 		Client:     a.client,
@@ -102,10 +112,10 @@ func (a *Actuator) Create(ctx context.Context, cluster *clusterv1.Cluster, machi
 		return a.handleMachineError(machine, apierrors.CreateMachine("failed to create machine %q scope: %v", machine.Name, err), createEventAction)
 	}
 
-	err = a.reconcilerBuilder(scope).Create(context.Background())
+	err = a.reconcilerBuilder(createScope).Create(context.Background())
 	if err != nil {
 		// We still want to persist on failure to update MachineStatus
-		if err := scope.PersistIfNeeded(machine); err != nil {
+		if err := currScope.UpdateFromOtherScope(createScope); err != nil {
 			klog.Errorf("Error storing machine info: %v", err)
 		}
 		a.handleMachineError(machine, apierrors.CreateMachine("failed to reconcile machine %qs: %v", machine.Name, err), createEventAction)
@@ -114,7 +124,7 @@ func (a *Actuator) Create(ctx context.Context, cluster *clusterv1.Cluster, machi
 		}
 	}
 
-	if err := scope.PersistIfNeeded(machine); err != nil {
+	if err := currScope.UpdateFromOtherScope(createScope); err != nil {
 		return fmt.Errorf("error storing machine info: %v", err)
 	}
 
@@ -127,7 +137,17 @@ func (a *Actuator) Create(ctx context.Context, cluster *clusterv1.Cluster, machi
 func (a *Actuator) Delete(ctx context.Context, cluster *clusterv1.Cluster, machine *machinev1.Machine) error {
 	klog.Infof("Deleting machine %v", machine.Name)
 
-	scope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
+	currScope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
+		Machine:    machine,
+		Cluster:    nil,
+		Client:     a.client,
+		CoreClient: a.coreClient,
+	})
+	if err != nil {
+		return a.handleMachineError(machine, apierrors.DeleteMachine("failed to create machine %q scope: %v", machine.Name, err), deleteEventAction)
+	}
+
+	deleteScope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
 		Machine:    machine.DeepCopy(),
 		Cluster:    nil,
 		Client:     a.client,
@@ -137,10 +157,10 @@ func (a *Actuator) Delete(ctx context.Context, cluster *clusterv1.Cluster, machi
 		return a.handleMachineError(machine, apierrors.DeleteMachine("failed to create machine %q scope: %v", machine.Name, err), deleteEventAction)
 	}
 
-	err = a.reconcilerBuilder(scope).Delete(context.Background())
+	err = a.reconcilerBuilder(deleteScope).Delete(context.Background())
 	if err != nil {
 		// We still want to persist on failure to update MachineStatus
-		if err := scope.PersistIfNeeded(machine); err != nil {
+		if err := currScope.UpdateFromOtherScope(deleteScope); err != nil {
 			klog.Errorf("Error storing machine info: %v", err)
 		}
 		a.handleMachineError(machine, apierrors.DeleteMachine("failed to delete machine %q: %v", machine.Name, err), deleteEventAction)
@@ -149,7 +169,7 @@ func (a *Actuator) Delete(ctx context.Context, cluster *clusterv1.Cluster, machi
 		}
 	}
 
-	if err := scope.PersistIfNeeded(machine); err != nil {
+	if err := currScope.UpdateFromOtherScope(deleteScope); err != nil {
 		return fmt.Errorf("error storing machine info: %v", err)
 	}
 
@@ -164,7 +184,17 @@ func (a *Actuator) Delete(ctx context.Context, cluster *clusterv1.Cluster, machi
 func (a *Actuator) Update(ctx context.Context, cluster *clusterv1.Cluster, machine *machinev1.Machine) error {
 	klog.Infof("Updating machine %v", machine.Name)
 
-	scope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
+	currScope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
+		Machine:    machine,
+		Cluster:    nil,
+		Client:     a.client,
+		CoreClient: a.coreClient,
+	})
+	if err != nil {
+		return a.handleMachineError(machine, apierrors.UpdateMachine("failed to create machine %q scope: %v", machine.Name, err), updateEventAction)
+	}
+
+	updateScope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
 		Machine:    machine.DeepCopy(),
 		Cluster:    nil,
 		Client:     a.client,
@@ -174,10 +204,10 @@ func (a *Actuator) Update(ctx context.Context, cluster *clusterv1.Cluster, machi
 		return a.handleMachineError(machine, apierrors.UpdateMachine("failed to create machine %q scope: %v", machine.Name, err), updateEventAction)
 	}
 
-	err = a.reconcilerBuilder(scope).Update(context.Background())
+	err = a.reconcilerBuilder(updateScope).Update(context.Background())
 	if err != nil {
 		// We still want to persist on failure to update MachineStatus
-		if err := scope.PersistIfNeeded(machine); err != nil {
+		if err := currScope.UpdateFromOtherScope(updateScope); err != nil {
 			klog.Errorf("Error storing machine info: %v", err)
 		}
 		a.handleMachineError(machine, apierrors.UpdateMachine("failed to update machine %q: %v", machine.Name, err), updateEventAction)
@@ -186,7 +216,7 @@ func (a *Actuator) Update(ctx context.Context, cluster *clusterv1.Cluster, machi
 		}
 	}
 
-	if err := scope.PersistIfNeeded(machine); err != nil {
+	if err := currScope.UpdateFromOtherScope(updateScope); err != nil {
 		return fmt.Errorf("error storing machine info: %v", err)
 	}
 
@@ -200,7 +230,7 @@ func (a *Actuator) Exists(ctx context.Context, cluster *clusterv1.Cluster, machi
 	klog.Infof("Checking if machine %v exists", machine.Name)
 
 	scope, err := actuators.NewMachineScope(actuators.MachineScopeParams{
-		Machine:    machine,
+		Machine:    machine.DeepCopy(),
 		Cluster:    nil,
 		Client:     a.client,
 		CoreClient: a.coreClient,

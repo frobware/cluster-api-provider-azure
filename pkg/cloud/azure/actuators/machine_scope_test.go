@@ -285,7 +285,7 @@ func TestPersistIfNeeded(t *testing.T) {
 		s.Machine.Status = *tc.modifiedStatus.DeepCopy()
 		s.MachineConfig = tc.modifiedProviderSpec.DeepCopy()
 		s.MachineStatus = tc.modifiedProviderStatus.DeepCopy()
-		if err = s.PersistIfNeeded(currentMachine); err != nil {
+		if err = s.UpdateFromOtherScope(currentMachine); err != nil {
 			t.Fatalf("Unexpected error %v", err)
 		}
 

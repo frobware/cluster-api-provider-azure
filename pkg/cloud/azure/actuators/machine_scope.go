@@ -141,14 +141,15 @@ func (m *MachineScope) Location() string {
 	return m.Scope.Location()
 }
 
-func (s *MachineScope) storeMachine() (*machinev1.Machine, error) {
+func (s *MachineScope) storeMachine() error {
 	ext, err := v1beta1.EncodeMachineSpec(s.MachineConfig)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	s.Machine.Spec.ProviderSpec.Value = ext
-	return s.MachineClient.Update(s.Machine)
+	_, err = s.MachineClient.Update(s.Machine)
+	return err
 }
 
 func (s *MachineScope) storeMachineStatus() (*machinev1.Machine, error) {
@@ -163,31 +164,72 @@ func (s *MachineScope) storeMachineStatus() (*machinev1.Machine, error) {
 	return s.MachineClient.UpdateStatus(s.Machine)
 }
 
-func (s *MachineScope) PersistIfNeeded(currentMachine *machinev1.Machine) error {
-	currentConfig, err := MachineConfigFromProviderSpec(currentMachine.Spec.ProviderSpec)
+// machineDeepEqual returns true of machines a and b are deeply
+// equal. Equality is governed by equality.Semantic.DeepEqual.
+func machineDeepEqual(a, b *machinev1.Machine) bool {
+	return equality.Semantic.DeepEqual(a, b)
+}
+
+func machineProviderSpecDeepEqual(a, b *v1beta1.AzureMachineProviderSpec) bool {
+	return equality.Semantic.DeepEqual(a, b)
+}
+
+func machineProviderStatusDeepEqual(a, b *v1beta1.AzureMachineProviderStatus) bool {
+	return equality.Semantic.DeepEqual(a, b)
+}
+
+func (s *MachineScope) MachineEqual(other *MachineScope) bool {
+	return equality.Semantic.DeepEqual(s.Machine, other.Machine)
+}
+
+func (s *MachineScope) Persist(newMachine *machinev1.Machine) error {
+	currentConfig, err := MachineConfigFromProviderSpec(newMachine.Spec.ProviderSpec)
 	if err != nil {
 		return fmt.Errorf("failed to get machine config: %v", err)
 	}
-	currentProviderStatus, err := v1beta1.MachineStatusFromProviderStatus(currentMachine.Status.ProviderStatus)
+
+	currentProviderStatus, err := v1beta1.MachineStatusFromProviderStatus(newMachine.Status.ProviderStatus)
 	if err != nil {
 		return fmt.Errorf("failed to get machine providerStatus: %v", err)
 	}
 
-	// update machine if needed
-	if !equality.Semantic.DeepEqual(currentMachine, s.Machine) ||
-		!equality.Semantic.DeepEqual(currentConfig, s.MachineConfig) {
-		if _, err := s.storeMachine(); err != nil {
-			return fmt.Errorf("[machinescope] failed to update machine %q in namespace %q: %v", s.Machine.Name, s.Machine.Namespace, err)
+	specEqual := machineProviderSpecDeepEqual(s.MachineConfig, currentConfig)
+	statusEqual := machineProviderStatusDeepEqual(s.MachineStatus, currentProviderStatus)
+
+	if !specEqual || !machineDeepEqual(s.Machine, newMachine) {
+		ext, err := v1beta1.EncodeMachineSpec(s.MachineConfig)
+		if err != nil {
+			return err
 		}
+		newMachine, err = s.MachineClient.Update(newMachine)
+		if err != nil {
+			return err
+		}
+		s.Machine.Spec.ProviderSpec.Value = ext
+		newMachine.DeepCopyInto(s.Machine)
 	}
 
-	// update status if needed
-	if !equality.Semantic.DeepEqual(currentMachine.Status, s.Machine.Status) ||
-		!equality.Semantic.DeepEqual(currentProviderStatus, s.MachineStatus) {
-		if _, err := s.storeMachineStatus(); err != nil {
-			return fmt.Errorf("[machinescope] failed to store provider status for machine %q in namespace %q: %v", s.Machine.Name, s.Machine.Namespace, err)
+	if !statusEqual || !machineDeepEqual(s.Machine, newMachine) {
+		ext, err := v1beta1.EncodeMachineStatus(s.MachineStatus)
+		if err != nil {
+			return err
 		}
+
+		time := metav1.Now()
+		s.Machine.Status.LastUpdated = &time
+		s.Machine.Status.ProviderStatus = ext
+
+		newMachine, err = s.MachineClient.UpdateStatus(s.Machine)
+		if err != nil {
+			return err
+		}
+		return nil
 	}
+	newMachine.DeepCopyInto(s.Machine)
+	s.Machine = newMachine
+	s.MachineConfig = currentConfig
+	s.MachineStatus = currentProviderStatus
+
 	return nil
 }
 
@@ -305,6 +347,71 @@ func updateScope(coreClient controllerclient.Client, credentialsSecret *apicorev
 	scope.SubscriptionID = string(subscriptionID)
 	scope.ClusterConfig.ResourceGroup = string(resourceGroup)
 	scope.ClusterConfig.Location = string(region)
+
+	return nil
+}
+
+func (s *MachineScope) UpdateFromOtherScope(other *MachineScope) error {
+	if err := s.updateMachineFromScope(other); err != nil {
+		return err
+	}
+	return s.updateMachineStatusFromScope(other)
+}
+
+func (s *MachineScope) updateMachineFromScope(other *MachineScope) error {
+	spec, err := MachineConfigFromProviderSpec(other.Machine.Spec.ProviderSpec)
+	if err != nil {
+		return fmt.Errorf("failed to get machine config: %v", err)
+	}
+
+	if machineProviderSpecDeepEqual(s.MachineConfig, spec) && machineDeepEqual(s.Machine, other.Machine) {
+		return nil
+	}
+
+	_, err = v1beta1.EncodeMachineSpec(spec)
+	if err != nil {
+		return err
+	}
+
+	machineCopy := other.Machine.DeepCopy()
+	updatedMachine, err := s.MachineClient.Update(machineCopy)
+	if err != nil {
+		return err
+	}
+
+	updatedMachine.DeepCopyInto(s.Machine)
+	s.MachineConfig = spec
+
+	return nil
+}
+
+func (s *MachineScope) updateMachineStatusFromScope(other *MachineScope) error {
+	currentProviderStatus, err := v1beta1.MachineStatusFromProviderStatus(other.Machine.Status.ProviderStatus)
+	if err != nil {
+		return fmt.Errorf("failed to get machine providerStatus: %v", err)
+	}
+
+	if machineProviderStatusDeepEqual(s.MachineStatus, currentProviderStatus) {
+		return nil
+	}
+
+	ext, err := v1beta1.EncodeMachineStatus(s.MachineStatus)
+	if err != nil {
+		return err
+	}
+
+	time := metav1.Now()
+	machineCopy := other.Machine.DeepCopy()
+	machineCopy.Status.LastUpdated = &time
+	machineCopy.Status.ProviderStatus = ext
+
+	updatedMachine, err := s.MachineClient.UpdateStatus(machineCopy)
+	if err != nil {
+		return err
+	}
+
+	updatedMachine.DeepCopyInto(s.Machine)
+	s.MachineStatus = currentProviderStatus
 
 	return nil
 }
